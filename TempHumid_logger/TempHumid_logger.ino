@@ -3,9 +3,13 @@
 //
 // Logs temperature and humidity data from a DHT22 connect to an Arduino to a ThingSpeak channel via WiFi
 //
+// NOTE **************
+// Remove the sheild before uploading!!!!
+//
 // Change log:
 //  2018-Oct-29 Changed channel on ThingSpeak to separate this data from other data being logged to the previous channel
 //              Added char definitions for Serial calls to remove warnings upon compilation
+//  2019-Feb-26 Changed WiFi code to loop continuously trying to connect so it might recover from a power outage.
 
 #include<stdlib.h>
 #include "DHT.h"
@@ -142,27 +146,31 @@ bool updateTemp(String tenmpF, String humid){
  
 boolean connectWiFi(){
   char OK[] = "OK";
-  
-  //set ESP8266 mode with AT commands
-  Serial.println("AT+CWMODE=1");
-  delay(2000);
 
-  //build connection command
-  String cmd="AT+CWJAP=\"";
-  cmd+=SSID;
-  cmd+="\",\"";
-  cmd+=PASS;
-  cmd+="\"";
+  while (true) { // we have nothing else to do, so keep trying
+    //set ESP8266 mode with AT commands
+    Serial.println("AT+CWMODE=1");
+    delay(2000);
+
+    //build connection command
+    String cmd="AT+CWJAP=\"";
+    cmd+=SECRET_SSID;
+    cmd+="\",\"";
+    cmd+=SECRET_PASS;
+    cmd+="\"";
   
-  //connect to WiFi network and wait 5 seconds
-  Serial.println(cmd);
-  delay(5000);
+    //connect to WiFi network and wait 5 seconds
+    Serial.println(cmd);
+    delay(5000);
   
-  //if connected return true, else false
-  if(Serial.find(OK)){
-    return true;
-  }else{
-    return false;
+    //if connected return true, else false
+    if(Serial.find(OK)){
+      return true;
+    }
+    else {
+      delay(60000); // wait a minute
+      //return false;
+    }
   }
 }
 
