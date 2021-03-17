@@ -1,4 +1,4 @@
-// Copyright (C) Wayne Geiser, 2018-2019.  All Rights Rreserved.
+// Copyright (C) Wayne Geiser, 2018-2021.  All Rights Rreserved.
 // email: geiserw@gmail.com
 //
 // Logs temperature and humidity data from a DHT22 connect to an Arduino to a ThingSpeak channel via WiFi
@@ -6,14 +6,20 @@
 // NOTE **************
 // Remove the sheild before uploading!!!!
 //
+// Dependencies:
+//    DHT sensor library
+//    watchdog timer library
+//
 // Change log:
 //  2018-Oct-29 Changed channel on ThingSpeak to separate this data from other data being logged to the previous channel
 //              Added char definitions for Serial calls to remove warnings upon compilation
 //  2019-Feb-26 Changed WiFi code to loop continuously trying to connect so it might recover from a power outage.
+//  2021-Mar-06 Added Watchdog code in case of hang.
 
 #include<stdlib.h>
 #include "DHT.h"
 #include "SecretStuff.h" // definitions for SSID and PASS (your network name and password)
+#include <avr/wdt.h>
 
 // Configuration needed to get this to run in your environment is surrounded by <! !>
 #define IP "184.106.153.149" // thingspeak.com
@@ -22,7 +28,7 @@
 #define Baud_Rate 115200 //Another common value is 9600
 #define GREEN_LED 3 //optional LED's for debugging
 #define RED_LED 4 //optional LED's for debugging
-#define DELAY_TIME 599000 //time in ms between posting data to ThingSpeak (10 minutes, like the hall thermostat minus 1 second led blink)
+#define DELAY_TIME 600000 // 10 mins
 
 //Can use a post also
 String GET = "GET /update?key=T3459S54GG8YFXBU&field1="; // Basement Data channel
@@ -40,14 +46,16 @@ void setup()
 {
   char OK[] = "OK";
   
+  wdt_enable(WDTO_8S);
+
   pinMode(GREEN_LED, OUTPUT);
   pinMode(RED_LED, OUTPUT);
   Serial.begin(Baud_Rate);
   Serial.println("AT");
   
-  delay(10000);
+  watchdog_delay(10000);
   
-  if(Serial.find("OK")){
+  if(Serial.find(OK)){
     //connect to your wifi netowork
     bool connected = connectWiFi();
     if(!connected){
@@ -73,11 +81,12 @@ void loop(){
     LightRed();
     return;
   }
-  
+
   //update ThingSpeak channel with new values
   updated = updateTemp(String(f), String(h));
   
-  //if update succeeded light up green LED, else light up green and red LED (to differentiate from the LightRed call (above)
+  //if update succeeded light up green LED, else light up green and red LED (to differentiate
+  // from the LightRed call (above)
   if(updated){
     digitalWrite(GREEN_LED, HIGH);
     digitalWrite(RED_LED, LOW);
@@ -85,14 +94,22 @@ void loop(){
     digitalWrite(GREEN_LED, HIGH);
     digitalWrite(RED_LED, HIGH);
   }
-  
-  //wait for delay time before attempting to post again
-  delay(DELAY_TIME);
+
+  watchdog_delay(DELAY_TIME);
 
   // blink to show we're working
   digitalWrite(GREEN_LED, LOW);
   digitalWrite(RED_LED, LOW);
-  delay(1000);
+  watchdog_delay(1000);
+}
+
+void watchdog_delay(long delay_ms) {
+  long num_trips = delay_ms / 500; // number of 1/2 second delays to do
+  
+  for (long i = 0; i < num_trips; i++) {
+    wdt_reset();
+    delay(500); // 0.5 sec
+  }
 }
 
 bool updateTemp(String tenmpF, String humid){
@@ -109,7 +126,7 @@ bool updateTemp(String tenmpF, String humid){
   
   //connect
   Serial.println(cmd);
-  delay(2000);
+  watchdog_delay(2000);
   if(Serial.find(ERROR)){
     return false;
   }
@@ -150,7 +167,7 @@ boolean connectWiFi(){
   while (true) { // we have nothing else to do, so keep trying
     //set ESP8266 mode with AT commands
     Serial.println("AT+CWMODE=1");
-    delay(2000);
+    watchdog_delay(2000);
 
     //build connection command
     String cmd="AT+CWJAP=\"";
@@ -161,14 +178,14 @@ boolean connectWiFi(){
   
     //connect to WiFi network and wait 5 seconds
     Serial.println(cmd);
-    delay(5000);
+    watchdog_delay(5000);
   
     //if connected return true, else false
     if(Serial.find(OK)){
       return true;
     }
     else {
-      delay(60000); // wait a minute
+      watchdog_delay(60000); // wait a minute
       //return false;
     }
   }
@@ -187,18 +204,21 @@ void LightRed(){
 //if an error has occurred alternate green and red leds
 void Error(int code){
   int i;
-  while (true) {
+  int j = 0;
+
+  while (j < 10) {
     i = code;
     do {    
       LightRed();      
-      delay(2000);      
+      watchdog_delay(2000);      
       LightGreen();
-      delay(2000);
-      i = i - 1;
+      watchdog_delay(2000);
+      i--;
     } while (i > 0);
     digitalWrite(GREEN_LED, LOW);
     digitalWrite(RED_LED, LOW);
-    delay(2000);
+    watchdog_delay(4000);
+    j++;
   }
+  delay(100000); // Let it reeboot
 }
-
