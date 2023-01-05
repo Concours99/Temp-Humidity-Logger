@@ -15,8 +15,10 @@
 //              Added char definitions for Serial calls to remove warnings upon compilation
 //  2019-Feb-26 Changed WiFi code to loop continuously trying to connect so it might recover from a power outage.
 //  2021-Mar-06 Added Watchdog code in case of hang.
+//  2023-Jan-02 Wait around for the WiFi network to connect
+//              Rest the arduino if the data can't be updated.  It probably means we lost WiFi without losing power.
 
-#include<stdlib.h>
+#include <stdlib.h>
 #include "DHT.h"
 #include "SecretStuff.h" // definitions for SSID and PASS (your network name and password)
 #include <avr/wdt.h>
@@ -28,6 +30,7 @@
 #define Baud_Rate 115200 //Another common value is 9600
 #define GREEN_LED 3 //optional LED's for debugging
 #define RED_LED 4 //optional LED's for debugging
+#define RESET 6 // Write to this pin will reset the Arduino
 #define DELAY_TIME 600000 // 10 mins
 
 //Can use a post also
@@ -42,36 +45,41 @@ bool updated;
 DHT dht(DHTPIN, DHTTYPE);
 
 //this runs once
-void setup()
-{
-  char OK[] = "OK";
-  
+void setup() {
+  // Watchdog timer
   wdt_enable(WDTO_8S);
+  
+  char OK[] = "OK";
 
   pinMode(GREEN_LED, OUTPUT);
   pinMode(RED_LED, OUTPUT);
+  LEDOn(RED_LED);
   Serial.begin(Baud_Rate);
+  // ESP32 module connected and functioning?
   Serial.println("AT");
   
   watchdog_delay(10000);
   
-  if(Serial.find(OK)){
+  if (Serial.find(OK)) {
     //connect to your wifi netowork
     bool connected = connectWiFi();
-    if(!connected){
+    if (!connected) {
       //failure, need to check your values and try again
+      // Note: we should NEVER get here.  connectWifi should wait around for the connection
       Error(1);
     }
-  }else{
+  }
+  else {
     Error(2);
   }
-  
+ 
   //initalize DHT sensor
   dht.begin();
+  LEDOff(GREEN_LED);
 }
 
 //this runs over and over
-void loop(){
+void loop() {
   float h = dht.readHumidity();
    // Read temperature as Fahrenheit (isFahrenheit = true)
   float f = dht.readTemperature(true);
@@ -79,27 +87,31 @@ void loop(){
   // Check if any reads failed and exit early (to try again).
   if (isnan(h) || isnan(f)) {
     LightRed();
+    watchdog_delay(1000);
+    LightGreen();
     return;
   }
 
   //update ThingSpeak channel with new values
   updated = updateTemp(String(f), String(h));
   
-  //if update succeeded light up green LED, else light up green and red LED (to differentiate
-  // from the LightRed call (above)
-  if(updated){
-    digitalWrite(GREEN_LED, HIGH);
-    digitalWrite(RED_LED, LOW);
-  }else{
-    digitalWrite(GREEN_LED, HIGH);
-    digitalWrite(RED_LED, HIGH);
+  //if update succeeded light up green LED, else light up red LED
+  if (updated) {
+    LightGreen();
   }
+  else {
+    LightRed();      
+    digitalWrite(RESET, LOW); // reset the device, we probably lost WiFi
+  }
+  watchdog_delay(1000);
+  LEDOff(GREEN_LED);
+  LEDOff(RED_LED);
 
-  watchdog_delay(DELAY_TIME);
+  watchdog_delay(DELAY_TIME - 1000);
 
   // blink to show we're working
-  digitalWrite(GREEN_LED, LOW);
-  digitalWrite(RED_LED, LOW);
+  LEDOff(GREEN_LED);
+  LEDOff(RED_LED);
   watchdog_delay(1000);
 }
 
@@ -112,7 +124,7 @@ void watchdog_delay(long delay_ms) {
   }
 }
 
-bool updateTemp(String tenmpF, String humid){
+bool updateTemp(String tenmpF, String humid) {
   char ERROR[] = "Error";
   char GREATER[] = ">";
   char OK[] = "OK";
@@ -127,7 +139,7 @@ bool updateTemp(String tenmpF, String humid){
   //connect
   Serial.println(cmd);
   watchdog_delay(2000);
-  if(Serial.find(ERROR)){
+  if (Serial.find(ERROR)) {
     return false;
   }
   
@@ -146,79 +158,105 @@ bool updateTemp(String tenmpF, String humid){
   //Use AT commands to send data
   Serial.print("AT+CIPSEND=");
   Serial.println(cmd.length());
-  if(Serial.find(GREATER)){
+  if (Serial.find(GREATER)) {
     //send through command to update values
     Serial.print(cmd);
-  }else{
+  }
+  else {
     Serial.println("AT+CIPCLOSE");
   }
   
-  if(Serial.find(OK)){
+  if (Serial.find(OK)) {
     //success! Your most recent values should be online.
     return true;
-  }else{
+  }
+  else {
     return false;
   }
 }
+
+void clearInputBuffer() {
+  while (Serial.available()) {
+    Serial.read();
+  }
+}
  
-boolean connectWiFi(){
+boolean connectWiFi() {
   char OK[] = "OK";
 
-  while (true) { // we have nothing else to do, so keep trying
-    //set ESP8266 mode with AT commands
-    Serial.println("AT+CWMODE=1");
-    watchdog_delay(2000);
-
-    //build connection command
-    String cmd="AT+CWJAP=\"";
-    cmd+=SECRET_SSID;
-    cmd+="\",\"";
-    cmd+=SECRET_PASS;
-    cmd+="\"";
+  //set ESP8266 mode with AT commands
+  String cmd1 = "AT+RST";
+  String cmd2 = "AT+CWMODE=1";
+  String cmd3 = "AT+CWJAP=\"";
+  cmd3 += SECRET_SSID;
+  cmd3 += "\",\"";
+  cmd3 += SECRET_PASS;
+  cmd3 += "\"";
   
+  while (true) {
     //connect to WiFi network and wait 5 seconds
-    Serial.println(cmd);
+    Serial.println(cmd1);
+    watchdog_delay(1000);
+    clearInputBuffer();
+    Serial.println(cmd2);
+    watchdog_delay(1000);
+    clearInputBuffer();
+    Serial.println(cmd3);
     watchdog_delay(5000);
   
-    //if connected return true, else false
-    if(Serial.find(OK)){
+    //if connected return true, else wait
+    if (Serial.find(OK)) {
+      wdt_reset(); // pet the watchdog
+      blinkLED(GREEN_LED);
       return true;
     }
     else {
-      watchdog_delay(60000); // wait a minute
-      //return false;
+      blinkLED(RED_LED);      
     }
   }
 }
 
-void LightGreen(){
-  digitalWrite(RED_LED, LOW);
-  digitalWrite(GREEN_LED, HIGH);  
+void blinkLED(int led) {
+  LEDOn(led);
+  watchdog_delay(500);
+  LEDOff(led);
+  watchdog_delay(500);
 }
 
-void LightRed(){
-  digitalWrite(GREEN_LED, LOW);
-  digitalWrite(RED_LED, HIGH);
+void LEDOn(int led) {
+  digitalWrite(led, HIGH);
+}
+
+void LEDOff(int led) {   
+  digitalWrite(led, LOW);
+}
+
+void LightGreen() {
+  LEDOff(RED_LED);
+  LEDOn(GREEN_LED);  
+}
+
+void LightRed() {
+  LEDOff(GREEN_LED);
+  LEDOn(RED_LED);
 }
 
 //if an error has occurred alternate green and red leds
-void Error(int code){
+void Error(int code) {
   int i;
   int j = 0;
 
   while (j < 10) {
     i = code;
     do {    
-      LightRed();      
-      watchdog_delay(2000);      
-      LightGreen();
-      watchdog_delay(2000);
+      blinkLED(RED_LED);
+      blinkLED(GREEN_LED);
       i--;
     } while (i > 0);
-    digitalWrite(GREEN_LED, LOW);
-    digitalWrite(RED_LED, LOW);
+    LEDOff(GREEN_LED);
+    LEDOff(RED_LED);
     watchdog_delay(4000);
     j++;
   }
-  delay(100000); // Let it reeboot
+  delay(100000); // Let it reboot
 }
